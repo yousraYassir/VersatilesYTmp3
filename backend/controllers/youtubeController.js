@@ -19,17 +19,25 @@ async function handleList(req, res) {
 async function handleDownload(req, res) {
   const { id } = req.params;
   try {
-    const filePath = await downloadAudio(id);
-    // Use makeSafeFilename for robust, consistent naming
-    const { makeSafeFilename } = require('../services/filenameUtil');
-    const pathParts = filePath.split(path.sep);
-    const fileName = pathParts[pathParts.length - 1];
-    let title = fileName.replace(/^.*?-/, '').replace(/\.mp3$/, '');
-    if (!title.trim()) title = 'audio';
-    const safeName = makeSafeFilename(id, title);
+    console.log(`[handleDownload] Requested ID: ${id}`);
+    await downloadAudio(id);
+    const tmpDir = require('os').tmpdir() + '/ytmp3';
+    const files = fs.readdirSync(tmpDir)
+      .filter(f => f.endsWith('.mp3'))
+      .map(f => ({ f, time: fs.statSync(path.join(tmpDir, f)).mtimeMs, size: fs.statSync(path.join(tmpDir, f)).size }))
+      .sort((a, b) => b.time - a.time);
+    console.log(`[handleDownload] MP3 files in temp dir:`, files.map(f => f.f));
+    if (!files.length) throw new Error('No MP3 file found after download');
+    const fileName = files[0].f;
+    const filePath = path.join(tmpDir, fileName);
+    console.log(`[handleDownload] Selected file for download: ${fileName} (path: ${filePath})`);
+    // Sanitize filename for Content-Disposition header
+    const safeFileName = fileName.replace(/[^a-zA-Z0-9._-]/g, '');
+    console.log(`[handleDownload] Safe filename for browser: ${safeFileName}`);
     const stream = fs.createReadStream(filePath);
     res.setHeader('Content-Type', 'audio/mpeg');
-    res.setHeader('Content-Disposition', `attachment; filename="${safeName}"`);
+    res.setHeader('Content-Disposition', `attachment; filename="${safeFileName}"`);
+    res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
     stream.pipe(res);
     let finished = false;
     stream.on('error', err => {

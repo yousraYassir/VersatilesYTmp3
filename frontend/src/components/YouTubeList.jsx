@@ -1,4 +1,77 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from "react";
+
+function formatTime(ms) {
+  if (!ms) return '0s';
+  const s = Math.floor(ms / 1000);
+  const m = Math.floor(s / 60);
+  const sec = s % 60;
+  return m > 0 ? `${m}m ${sec}s` : `${sec}s`;
+}
+
+function ProgressDetails({ progress }) {
+  const [convertingElapsed, setConvertingElapsed] = useState(null);
+  useEffect(() => {
+    let timer;
+    if (progress.phase === "converting" && progress.convertingStarted) {
+      timer = setInterval(() => {
+        setConvertingElapsed(((Date.now() - progress.convertingStarted) / 1000).toFixed(1));
+      }, 1000);
+      setConvertingElapsed(((Date.now() - progress.convertingStarted) / 1000).toFixed(1));
+    } else {
+      setConvertingElapsed(null);
+    }
+    return () => timer && clearInterval(timer);
+  }, [progress.phase, progress.convertingStarted]);
+
+  return (
+    <div className="progress-details">
+      <div><strong>Phase:</strong> {progress.phase}</div>
+      <div><strong>Percent:</strong> {progress.percent ? `${progress.percent}%` : '—'}</div>
+      <div><strong>Elapsed:</strong> {progress.started ? `${((Date.now() - progress.started) / 1000).toFixed(1)}s` : '—'}</div>
+      {progress.phase === 'downloading' && (
+        <div className="progress-bar" style={{ width: '100%', background: '#eee', borderRadius: 8, height: 8, margin: '8px 0' }}>
+          <div style={{ width: `${progress.percent || 0}%`, background: '#3b82f6', height: '100%', borderRadius: 8, transition: 'width 0.3s' }} />
+        </div>
+      )}
+      {progress.phase === 'converting' && (
+        <div style={{ margin: '8px 0' }}>
+          <div className="progress-bar-indeterminate" style={{ width: '100%', background: '#eee', borderRadius: 8, height: 8, overflow: 'hidden', position: 'relative' }}>
+            <div style={{
+              width: '40%',
+              background: 'linear-gradient(90deg, #3b82f6 40%, #60a5fa 100%)',
+              height: '100%',
+              borderRadius: 8,
+              position: 'absolute',
+              left: 0,
+              animation: 'indeterminateBar 1.2s linear infinite'
+            }} />
+          </div>
+          <style>{`
+            @keyframes indeterminateBar {
+              0% { left: 0; }
+              100% { left: 60%; }
+            }
+          `}</style>
+        </div>
+      )}
+      {progress.phase === 'converting' && (
+        <div><strong>Converting Elapsed:</strong> {convertingElapsed ? `${convertingElapsed}s` : '—'}</div>
+      )}
+      {progress.phase === 'finished' && progress.convertingElapsed && (
+        <div><strong>Converting Time:</strong> {`${(progress.convertingElapsed / 1000).toFixed(1)}s`}</div>
+      )}
+      {progress.title && (
+        <div><strong>Title:</strong> {progress.title}</div>
+      )}
+      {progress.outputFile && (
+        <div><strong>Filename:</strong> {progress.outputFile}</div>
+      )}
+      {progress.error && (
+        <div className="error"><strong>Error:</strong> {progress.error}</div>
+      )}
+    </div>
+  );
+}
 
 function YouTubeList({ videos }) {
   const [selected, setSelected] = useState([]);
@@ -7,6 +80,32 @@ function YouTubeList({ videos }) {
   const [batchProgress, setBatchProgress] = useState({ completed: 0, total: 0 });
   const [error, setError] = useState("");
   const [theme, setTheme] = useState('light');
+
+  // Poll progress for each downloading video
+  useEffect(() => {
+    const polling = {};
+    Object.keys(downloading).forEach(id => {
+      if (downloading[id]) {
+        polling[id] = setInterval(async () => {
+          try {
+            const res = await fetch(`http://localhost:4000/progress/${id}`);
+            if (res.ok) {
+              const data = await res.json();
+              setProgress(p => ({ ...p, [id]: data }));
+              if (data.phase === 'finished' || data.phase === 'error') {
+                clearInterval(polling[id]);
+              }
+            }
+          } catch (e) {
+            // Ignore polling errors
+          }
+        }, 1000);
+      }
+    });
+    return () => {
+      Object.values(polling).forEach(clearInterval);
+    };
+  }, [downloading]);
 
   const handleSelect = (id) => {
     setSelected(selected =>
@@ -61,30 +160,32 @@ function YouTubeList({ videos }) {
   const handleDownload = async (id) => {
     setError("");
     setDownloading(d => ({ ...d, [id]: true }));
-    setProgress(p => ({ ...p, [id]: 0 }));
+    setProgress(p => ({ ...p, [id]: { phase: 'starting', percent: 0 } }));
     try {
-      // Simulate progress polling (replace with real backend progress API if available)
-      let interval = setInterval(() => {
-        setProgress(p => ({ ...p, [id]: Math.min((p[id] || 0) + 20, 100) }));
-      }, 500);
       const res = await fetch(`http://localhost:4000/download/${id}`);
       if (!res.ok) throw new Error('Download failed');
-      clearInterval(interval);
-      setProgress(p => ({ ...p, [id]: 100 }));
+      setProgress(p => ({ ...p, [id]: { phase: 'finished', percent: 100 } }));
+      // Get filename from Content-Disposition header if present
+      let filename = `${id}.mp3`;
+      const cd = res.headers.get('Content-Disposition');
+      if (cd) {
+        const match = cd.match(/filename="?([^";]+)"?/);
+        if (match && match[1]) filename = match[1];
+      }
       const blob = await res.blob();
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `${id}.mp3`;
+      a.download = filename;
       document.body.appendChild(a);
       a.click();
       a.remove();
       window.URL.revokeObjectURL(url);
     } catch (err) {
       setError(err.message);
+      setProgress(p => ({ ...p, [id]: { phase: 'error', error: err.message } }));
     } finally {
       setDownloading(d => ({ ...d, [id]: false }));
-      setProgress(p => ({ ...p, [id]: 0 }));
     }
   };
 
@@ -158,66 +259,51 @@ function YouTubeList({ videos }) {
         </div>
       )}
       <ul style={{ listStyle: 'none', padding: 0 }}>
-        {videos.map(video => (
-          <li key={video.id} className="yt-list-item">
-            <input
-              type="checkbox"
-              checked={selected.includes(video.id)}
-              onChange={() => handleSelect(video.id)}
-              style={{ marginRight: 12 }}
-            />
-            {video.thumbnail && (
-              <img src={video.thumbnail} alt={video.title} className="yt-thumb" />
-            )}
-            <div className="yt-info">
-              <div className="yt-title">{video.title}</div>
-              {video.duration && <div className="yt-duration">Duration: {video.duration}s</div>}
-            </div>
-            <button
-              onClick={() => handleDownload(video.id)}
-              disabled={!!downloading[video.id]}
-              style={{ marginLeft: 12 }}
-            >
-              {downloading[video.id] ? 'Downloading...' : 'Download MP3'}
-            </button>
-            {downloading[video.id] && (
-              <progress value={progress[video.id] || 0} max="100" style={{ marginLeft: 8 }} />
-            )}
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
-
-  return (
-    <div className="yt-list">
-      <div className="yt-list-controls">
-        <button onClick={handleDownloadSelected} disabled={selected.length === 0 || downloading.selected}>
-          {downloading.selected ? 'Downloading...' : 'Download Selected'}
-        </button>
-        <button onClick={handleDownloadAll} disabled={downloading.all}>
-          {downloading.all ? 'Downloading...' : 'Download All'}
-        </button>
-      </div>
-      {error && <div className="error">{error}</div>}
-      <ul>
-        {videos.map(video => (
-          <li key={video.id} className="yt-list-item">
-            <input
-              type="checkbox"
-              checked={selected.includes(video.id)}
-              onChange={() => handleSelect(video.id)}
-            />
-            <img src={video.thumbnail} alt={video.title} className="yt-thumb" />
-            <div className="yt-info">
-              <div className="yt-title">{video.title}</div>
-              <div className="yt-duration">{video.duration}s</div>
-            </div>
-            <button onClick={() => handleDownload(video.id)} disabled={!!downloading[video.id]}>
-              {downloading[video.id] ? 'Downloading...' : 'Download MP3'}
-            </button>
-          </li>
-        ))}
+        {videos.map(video => {
+          const prog = progress[video.id] || {};
+          return (
+            <li key={video.id} className="yt-list-item">
+              <input
+                type="checkbox"
+                checked={selected.includes(video.id)}
+                onChange={() => handleSelect(video.id)}
+                style={{ marginRight: 12 }}
+              />
+              {video.thumbnail && (
+                <img src={video.thumbnail} alt={video.title} className="yt-thumb" />
+              )}
+              <div className="yt-info">
+                <div className="yt-title">{video.title}</div>
+                {video.duration && <div className="yt-duration">Duration: {video.duration}s</div>}
+                {downloading[video.id] && (
+                  <div style={{ marginTop: 8, fontSize: '1em', fontWeight: 500 }}>
+                    <span>Phase: {prog.phase || 'starting'}</span>
+                    {prog.percent !== undefined && (
+                      <span style={{ marginLeft: 12 }}>Progress: {prog.percent}%</span>
+                    )}
+                    {prog.started && (
+                      <span style={{ marginLeft: 12 }}>Elapsed: {formatTime(Date.now() - prog.started)}</span>
+                    )}
+                    {prog.error && (
+                      <span style={{ color: 'red', marginLeft: 12 }}>Error: {prog.error}</span>
+                    )}
+                  </div>
+                )}
+                {video.progress && <ProgressDetails progress={video.progress} />}
+              </div>
+              <button
+                onClick={() => handleDownload(video.id)}
+                disabled={!!downloading[video.id]}
+                style={{ marginLeft: 12 }}
+              >
+                {downloading[video.id] ? 'Downloading...' : 'Download MP3'}
+              </button>
+              {downloading[video.id] && (
+                <progress value={prog.percent || 0} max="100" style={{ marginLeft: 8 }} />
+              )}
+            </li>
+          );
+        })}
       </ul>
     </div>
   );

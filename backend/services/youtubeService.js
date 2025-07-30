@@ -107,31 +107,89 @@ async function extractInfo(url) {
   }
 }
 
+// In-memory progress tracker
+const downloadProgress = {};
+function setDownloadProgress(id, data) {
+  downloadProgress[id] = { ...downloadProgress[id], ...data };
+}
+function getDownloadProgress(id) {
+  return downloadProgress[id] || null;
+}
+
 // Download and convert a single video to MP3
 async function downloadAudio(id) {
+  console.log(`[downloadAudio] Begin for ID: ${id}`);
+  setDownloadProgress(id, { phase: 'starting', percent: 0, started: Date.now(), error: null });
   // Remove all old files for this id
   const oldFiles = glob.sync(path.join(TMP_DIR, `${id}-*.mp3`));
   oldFiles.forEach(f => fs.unlinkSync(f));
-  const outPattern = `${id}-%(title)s.%(ext)s`;
-  // Allow custom timeout (ms) as second arg
+  // Output pattern will be set after title is fetched
+  let outPattern = `${id}.%(ext)s`;
+  const { makeSafeFilename } = require('./filenameUtil');
+
+  // Step 1: Fetch video info for duration and title
+  let duration = null;
+  let title = null;
+  try {
+    const infoArgs = ['--dump-json', `https://youtube.com/watch?v=${id}`];
+    const info = await runYtDlp(infoArgs);
+    duration = info && info.duration ? info.duration : null;
+    title = info && info.title ? info.title : null;
+    setDownloadProgress(id, { phase: 'fetched-metadata', duration, title });
+    let fullTitle = info && info.title ? info.title : id;
+    let safeName = makeSafeFilename('', fullTitle); // Only use title
+    outPattern = safeName.replace(/\.mp3$/, '.%(ext)s');
+    console.log(`[downloadAudio] yt-dlp output pattern: ${outPattern} (title: ${fullTitle})`);
+  } catch (e) {
+    setDownloadProgress(id, { phase: 'fetched-metadata', duration: null, title: null, error: e.message });
+    console.warn(`[downloadAudio] Could not fetch duration/title for ${id}: ${e.message}`);
+    let safeName = makeSafeFilename('', id);
+    outPattern = safeName.replace(/\.mp3$/, '.%(ext)s');
+    console.log(`[downloadAudio] yt-dlp fallback output pattern: ${outPattern}`);
+  }
+
+  // Step 2: Calculate timeout
+  const MIN_TIMEOUT_MS = 600000; // 10 min fallback
+  const timeoutMs = duration ? Math.max(duration * 2000, MIN_TIMEOUT_MS) : MIN_TIMEOUT_MS;
+
   return new Promise((resolve, reject) => {
-    console.log(`[downloadAudio] Starting yt-dlp (mp3 direct) for ${id}`);
+    setDownloadProgress(id, { phase: 'downloading', percent: 0 });
+    console.log(`[downloadAudio] Starting yt-dlp (mp3 direct) for ${id} (timeout: ${timeoutMs}ms)`);
     const ytdlp = execFile('yt-dlp', [
       '-f', 'bestaudio',
       '-x', '--audio-format', 'mp3',
       '-o', outPattern,
       `https://youtube.com/watch?v=${id}`
     ], { cwd: TMP_DIR });
-    // Log yt-dlp output for debugging
-    ytdlp.stdout && ytdlp.stdout.on('data', d => process.stdout.write(`[yt-dlp stdout] ${d}`));
+    let convertingStart = null;
+    let mp3FileName = null;
+    ytdlp.stdout && ytdlp.stdout.on('data', d => {
+      process.stdout.write(`[yt-dlp stdout] ${d}`);
+      // Parse yt-dlp progress lines for percent
+      const match = String(d).match(/\[download\]\s+(\d+\.\d+)%/);
+      if (match) {
+        setDownloadProgress(id, { percent: parseFloat(match[1]), phase: 'downloading' });
+      }
+      // Parse filename from yt-dlp output
+      const fileMatch = String(d).match(/Destination:\s*(.+\.mp3)/);
+      if (fileMatch) {
+        mp3FileName = fileMatch[1].trim();
+        setDownloadProgress(id, { outputFile: mp3FileName });
+        console.log(`[downloadAudio] yt-dlp reports Destination: ${mp3FileName}`);
+      }
+      if (String(d).includes('[ExtractAudio]')) {
+        convertingStart = Date.now();
+        setDownloadProgress(id, { phase: 'converting', convertingStarted: convertingStart });
+        console.log(`[downloadAudio] Entering converting phase for ID: ${id}`);
+      }
+    });
     ytdlp.stderr && ytdlp.stderr.on('data', d => process.stderr.write(`[yt-dlp stderr] ${d}`));
     let finished = false;
-    // Use custom timeout if provided, else default 60s
-    const timeoutMs = arguments[1] && typeof arguments[1] === 'number' ? arguments[1] : 60000;
     const timeout = setTimeout(() => {
       if (!finished) {
         finished = true;
         ytdlp.kill();
+        setDownloadProgress(id, { phase: 'error', error: 'Download/conversion timed out' });
         console.error(`[downloadAudio] Timeout for ${id}`);
         reject(new Error('Download/conversion timed out'));
       }
@@ -140,32 +198,37 @@ async function downloadAudio(id) {
       if (!finished) {
         finished = true;
         clearTimeout(timeout);
-        // List temp dir contents for debugging
+        // Debug: list all .mp3 files in TMP_DIR after yt-dlp
         const filesInTmp = fs.readdirSync(TMP_DIR);
-        console.log(`[downloadAudio] Temp dir contents after yt-dlp:`, filesInTmp);
-        if (code === 0) {
-          // Find the actual file (robust: match id at start, .mp3 at end)
-          const files = filesInTmp.filter(f => f.startsWith(`${id}-`) && f.endsWith('.mp3'));
-          if (files.length > 0) {
-            const filePath = path.join(TMP_DIR, files[0]);
-            console.log(`[downloadAudio] Finished for ${id}: ${filePath}`);
-            resolve(filePath);
-          } else {
-            console.error(`[downloadAudio] No MP3 found for ${id}`);
-            console.error(`[downloadAudio] All files in temp:`, filesInTmp);
-            reject(new Error('MP3 file not found after yt-dlp'));
-          }
-        } else {
-          console.error(`[downloadAudio] yt-dlp failed for ${id}`);
-          reject(new Error('yt-dlp failed'));
+        const mp3Files = filesInTmp
+          .filter(f => f.endsWith('.mp3'))
+          .map(f => {
+            const stat = fs.statSync(path.join(TMP_DIR, f));
+            return { f, mtime: stat.mtimeMs, size: stat.size };
+          });
+        console.log(`[downloadAudio] All .mp3 files in TMP_DIR after yt-dlp:`, mp3Files);
+        // Pick the largest file created in the last 2 minutes
+        const now = Date.now();
+        const recentMp3s = mp3Files.filter(f => now - f.mtime < 2 * 60 * 1000);
+        let filePath = null;
+        if (recentMp3s.length > 0) {
+          recentMp3s.sort((a, b) => b.size - a.size);
+          filePath = path.join(TMP_DIR, recentMp3s[0].f);
+          console.log(`[downloadAudio] Selected file for resolve: ${recentMp3s[0].f}`);
         }
-      }
-    });
-    ytdlp.on('error', err => {
-      if (!finished) {
-        finished = true;
-        clearTimeout(timeout);
-        reject(err);
+        let convertingElapsed = null;
+        if (convertingStart) {
+          convertingElapsed = Date.now() - convertingStart;
+        }
+        if (filePath && fs.existsSync(filePath)) {
+          setDownloadProgress(id, { phase: 'finished', percent: 100, finished: Date.now(), outputFile: path.basename(filePath), convertingElapsed });
+          console.log(`[downloadAudio] Finished for ${id}: ${filePath}`);
+          resolve(filePath);
+        } else {
+          setDownloadProgress(id, { phase: 'error', error: 'MP3 file not found after yt-dlp' });
+          console.error(`[downloadAudio] No MP3 found for ${id}`);
+          reject(new Error('MP3 file not found after yt-dlp'));
+        }
       }
     });
   });
@@ -184,7 +247,7 @@ async function zipAudios(ids, res = null) {
 
   // Patch downloadAudio to allow process tracking/kill
   async function downloadAudioTracked(id, timeoutMs = 60000) {
-    // Remove all old files for this id
+    // Remove all old files
     const oldFiles = glob.sync(path.join(TMP_DIR, `${id}-*.mp3`));
     oldFiles.forEach(f => fs.unlinkSync(f));
     const outPattern = `${id}-%(title)s.%(ext)s`;
@@ -349,4 +412,9 @@ async function zipAudios(ids, res = null) {
   });
 }
  
-module.exports = { extractInfo, downloadAudio, zipAudios };
+module.exports = {
+  extractInfo,
+  downloadAudio,
+  zipAudios,
+  getDownloadProgress,
+};

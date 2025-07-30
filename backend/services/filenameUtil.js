@@ -3,20 +3,16 @@ const { slugify } = require('transliteration');
 
 function makeSafeFilename(id, title, existingNames = new Set()) {
   // Transliterate to ASCII
-  let safe = slugify(title || '', { lowercase: false, separator: '_' });
-  // Remove non-alphanum, collapse underscores, trim, limit length
+  let safe = slugify(title || '', { lowercase: false, separator: '' });
+  // Remove non-alphanum, remove spaces, trim, limit length
   safe = safe
-    .replace(/[^\w\s-]/g, '')
-    .replace(/\s+/g, '_')
-    .replace(/_+/g, '_')
-    .replace(/^_+|_+$/g, '')
-    .slice(0, 32);
+    .replace(/[^a-zA-Z0-9]/g, '')
+    .slice(0, 64);
   if (!safe) safe = 'audio';
-  let base = `${id}-${safe}`;
-  let name = base;
+  let name = safe;
   let n = 1;
   while (existingNames.has(name)) {
-    name = `${base}_${n}`;
+    name = `${safe}_${n}`;
     n++;
   }
   existingNames.add(name);
