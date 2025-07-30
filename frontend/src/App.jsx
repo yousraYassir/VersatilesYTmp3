@@ -1,12 +1,14 @@
-import React, { useState } from 'react';
+import React, { useState, useContext } from 'react';
 import YouTubeList from './components/YouTubeList';
 import './App.css';
+import { ThemeContext } from './main';
 
 function App() {
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [videos, setVideos] = useState([]);
+  const { theme, setTheme } = useContext(ThemeContext);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -30,7 +32,12 @@ function App() {
   };
 
   return (
-    <div className="container">
+    <div className={`container theme-${theme}`}>
+      <div style={{ marginBottom: 18, textAlign: 'right', width: '100%' }}>
+        <button onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}>
+          Switch to {theme === 'light' ? 'Dark' : 'Light'} Theme
+        </button>
+      </div>
       <h1>YouTube to MP3 Downloader</h1>
       <form onSubmit={handleSubmit} className="input-form">
         <input
