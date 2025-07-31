@@ -239,18 +239,37 @@ async function zipAudios(ids, res = null) {
   const zipPath = path.join(TMP_DIR, `mp3s_${Date.now()}.zip`);
   const { makeSafeFilename } = require('./filenameUtil');
   const usedNames = new Set();
-  // Pool concurrency configurable via env
-  const CONCURRENCY = parseInt(process.env.YTMP3_CONCURRENCY, 10) || 6;
+  // Pool concurrency configurable via env; default to 32 for max speed
+  const CONCURRENCY = parseInt(process.env.YTMP3_CONCURRENCY, 10) || 32;
+  logger.info(`[Batch] Using concurrency: ${CONCURRENCY}`);
   const failures = [];
   const results = [];
   const runningProcs = new Set(); // Track running yt-dlp procs
 
   // Patch downloadAudio to allow process tracking/kill
-  async function downloadAudioTracked(id, timeoutMs = 60000) {
+  // Dynamic timeout logic for batch downloads
+  async function downloadAudioTracked(id) {
     // Remove all old files
     const oldFiles = glob.sync(path.join(TMP_DIR, `${id}-*.mp3`));
     oldFiles.forEach(f => fs.unlinkSync(f));
     const outPattern = `${id}-%(title)s.%(ext)s`;
+    // Fetch video info for duration
+    let duration = null;
+    try {
+      const infoArgs = ['--dump-json', `https://youtube.com/watch?v=${id}`];
+      const info = await runYtDlp(infoArgs);
+      duration = info && info.duration ? info.duration : null;
+    } catch (e) {
+      logger.warn(`[Batch] Could not fetch duration for ${id}: ${e.message}`);
+    }
+    // Use .env or default for base timeout
+    const BASE_TIMEOUT_MS = parseInt(process.env.YTMP3_TIMEOUT_MS, 10) || 600000;
+    // If duration is available, set timeout to max(BASE_TIMEOUT_MS, duration * 2000)
+    let timeoutMs = BASE_TIMEOUT_MS;
+    if (duration) {
+      timeoutMs = Math.max(BASE_TIMEOUT_MS, duration * 2000);
+    }
+    logger.info(`[Batch] Downloading ${id} with timeout ${timeoutMs}ms (duration: ${duration || 'unknown'})`);
     return new Promise((resolve, reject) => {
       const ytdlp = execFile('yt-dlp', [
         '-f', 'bestaudio',

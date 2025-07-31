@@ -58,7 +58,7 @@ async function handleDownload(req, res) {
     console.error('Error in /download/:id:', err);
     if (!res.headersSent) res.status(500).json({ error: err.message });
   }
-}
+} 
 
 // POST /download-all
 async function handleDownloadAll(req, res) {
@@ -69,6 +69,7 @@ async function handleDownloadAll(req, res) {
     const stream = fs.createReadStream(zipPath);
     res.setHeader('Content-Type', 'application/zip');
     res.setHeader('Content-Disposition', 'attachment; filename="mp3s.zip"');
+    res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
     stream.pipe(res);
     let finished = false;
     stream.on('error', err => {
@@ -91,6 +92,16 @@ async function handleDownloadAll(req, res) {
   }
 }
 
+// GET /progress/all or /progress/selected (dummy implementation for now)
+function handleBatchProgress(req, res) {
+  // This is a placeholder. You should implement real batch progress tracking if needed.
+  // For now, just return a dummy response so the frontend doesn't get 404.
+  console.log(`[handleBatchProgress] Called for ${req.originalUrl}`);
+  const response = { phase: 'finished', percent: 100 };
+  console.log(`[handleBatchProgress] Responding:`, response);
+  res.json(response);
+}
+
 // Add process-level error handler to prevent server crash
 process.on('uncaughtException', err => {
   console.error('Uncaught Exception:', err);
@@ -99,4 +110,4 @@ process.on('unhandledRejection', err => {
   console.error('Unhandled Rejection:', err);
 });
 
-module.exports = { handleList, handleDownload, handleDownloadAll };
+module.exports = { handleList, handleDownload, handleDownloadAll, handleBatchProgress };

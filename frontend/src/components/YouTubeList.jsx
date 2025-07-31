@@ -140,11 +140,18 @@ function YouTubeList({ videos }) {
       if (!res.ok) throw new Error('Batch download failed');
       clearInterval(interval);
       setBatchProgress({ completed: videos.length, total: videos.length });
+      // Get filename from Content-Disposition header if present
+      let filename = 'mp3s.zip';
+      const cd = res.headers.get('Content-Disposition');
+      if (cd) {
+        const match = cd.match(/filename="?([^";]+)"?/);
+        if (match && match[1]) filename = match[1];
+      }
       const blob = await res.blob();
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = 'mp3s.zip';
+      a.download = filename;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -208,11 +215,18 @@ function YouTubeList({ videos }) {
       if (!res.ok) throw new Error('Batch download failed');
       clearInterval(interval);
       setBatchProgress({ completed: selected.length, total: selected.length });
+      // Get filename from Content-Disposition header if present
+      let filename = 'mp3s.zip';
+      const cd = res.headers.get('Content-Disposition');
+      if (cd) {
+        const match = cd.match(/filename="?([^";]+)"?/);
+        if (match && match[1]) filename = match[1];
+      }
       const blob = await res.blob();
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = 'mp3s.zip';
+      a.download = filename;
       document.body.appendChild(a);
       a.click();
       a.remove();
